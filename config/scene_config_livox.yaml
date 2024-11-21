@@ -1,0 +1,29 @@
+%YAML:1.0
+
+ImageNumber: 2
+LiDARNumber: 2
+DataPath: "/home/liunao/Kalibr/v1_20241118/pcd_png/"
+# DataPath: "/opt/csg/slam/navs//pcd_png/"
+
+CameraFoV: 100
+
+# Params for Canny Edge Extraction
+Canny.gray_threshold: 20
+Canny.len_threshold: 300
+
+# Params for Voxel Cutting & Plane Fitting & Edge Extraction
+Voxel.size: 1.0  # 1
+Voxel.eigen_ratio: 0.02 # 0.025
+Voxel.down_sample_size: 0.01
+Plane.min_points_size: 80 # 60
+Plane.normal_theta_min: 10
+Plane.normal_theta_max: 170
+Plane.max_size: 10  # 5
+Ransac.dis_threshold: 0.015  # 0.025
+Ransac.iter_num: 200
+Edge.min_dis_threshold: 0.05
+Edge.max_dis_threshold: 0.08
+
+# Params for color point clouds
+Color.dense: 10
+Color.intensity_threshold: 10

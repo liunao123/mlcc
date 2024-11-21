@@ -414,6 +414,7 @@ public:
             sensor_msgs::PointCloud2 dbg_msg;
             pcl::toROSMsg(line_cloud, dbg_msg);
             dbg_msg.header.frame_id = "camera_init";
+            dbg_msg.header.stamp = ros::Time::now();
             pub_edge.publish(dbg_msg);
             loop.sleep();
           }

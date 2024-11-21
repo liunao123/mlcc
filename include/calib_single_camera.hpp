@@ -33,8 +33,9 @@
 #include "BA/mypcl.hpp"
 #include "BA/ba.hpp"
 #include "BA/tools.hpp"
+#include <pcl/io/ply_io.h>
 
-#define FISHEYE
+// #define FISHEYE
 
 class Camera
 {
@@ -168,11 +169,19 @@ public:
     camera_.height_ = fCamSet["Camera.height"];
     fCamSet["CameraMat"] >> camera_.camera_matrix_;
     fCamSet["DistCoeffs"] >> camera_.dist_coeffs_;
-    camera_.fx_ = camera_.camera_matrix_.at<double>(0, 0);
-    camera_.s_ = camera_.camera_matrix_.at<double>(0, 1);
-    camera_.cx_ = camera_.camera_matrix_.at<double>(0, 2);
-    camera_.fy_ = camera_.camera_matrix_.at<double>(1, 1);
-    camera_.cy_ = camera_.camera_matrix_.at<double>(1, 2);
+
+    // camera_.camera_matrix_.at<double>(0, 0) /= 2.0 ;
+    // camera_.camera_matrix_.at<double>(0, 2) /= 2.0 ;
+    // camera_.camera_matrix_.at<double>(1, 1) /= 2.0 ;
+    // camera_.camera_matrix_.at<double>(1, 2) /= 2.0 ;
+
+    camera_.fx_ = camera_.camera_matrix_.at<double>(0, 0) ;
+    camera_.s_ =  camera_.camera_matrix_.at<double>(0, 1) ;
+    camera_.cx_ = camera_.camera_matrix_.at<double>(0, 2) ;
+    camera_.fy_ = camera_.camera_matrix_.at<double>(1, 1) ;
+    camera_.cy_ = camera_.camera_matrix_.at<double>(1, 2) ;
+
+
     camera_.k1_ = camera_.dist_coeffs_.at<double>(0, 0);
     camera_.k2_ = camera_.dist_coeffs_.at<double>(0, 1);
     #ifdef FISHEYE
@@ -199,6 +208,7 @@ public:
     std::cout << "Camera Matrix: " << std::endl << camera_.camera_matrix_ << std::endl;
     std::cout << "Distortion Coeffs: " << std::endl << camera_.dist_coeffs_ << std::endl;
     std::cout << "Extrinsic Params: " << std::endl << camera_.init_ext_ << std::endl;
+    std::cout << "camera_ :width and height :" << std::endl << camera_.width_  << " and " << camera_.height_ << std::endl;
     ROS_INFO_STREAM("Sucessfully load Camera Config");
   }
 
@@ -235,10 +245,33 @@ public:
   void loadImgAndPointcloud()
   {
     lidar_cloud_ = pcl::PointCloud<pcl::PointXYZI>::Ptr(new pcl::PointCloud<pcl::PointXYZI>);
-    pcl::io::loadPCDFile(data_path_ + std::to_string(lidar_number_) + ".pcd", *lidar_cloud_);
-    ROS_INFO_STREAM("Sucessfully load Point Cloud");
-    camera_.rgb_img_ = cv::imread(data_path_ + std::to_string(image_number_) + ".png", cv::IMREAD_COLOR);
-    ROS_INFO_STREAM("Sucessfully load Image");
+
+    const auto pcd_file  = data_path_ + std::to_string(lidar_number_) + ".ply" ;
+    if (pcd_file.substr(pcd_file.length() - 3 , 3) == "ply")
+    {
+        // Create a PLYReader object to Read the PLY file
+        pcl::PLYReader reader;
+        if (reader.read(pcd_file, *lidar_cloud_) == - 1)
+        {
+          std::cout << "216" << std::endl ;
+          ROS_INFO("Couldn't read the PLY file \n");
+        }
+    }
+    else
+    {
+    pcl::io::loadPCDFile(pcd_file, *lidar_cloud_);
+    ROS_INFO("Sucessfully load Point Cloud: %s ", pcd_file.c_str() );
+    }
+
+    std::string img_file = data_path_ + "/" + std::to_string(lidar_number_) + ".jpg";
+    std::ifstream file(img_file);
+    if (!file.good())
+    {
+      img_file = data_path_ + "/" + std::to_string(lidar_number_) + ".png";
+    }
+    camera_.rgb_img_ = cv::imread(img_file, cv::IMREAD_COLOR);
+    // cv::pyrDown(camera_.rgb_img_, camera_.rgb_img_, cv::Size(camera_.rgb_img_.cols / 2, camera_.rgb_img_.rows / 2)); //降采样
+    ROS_INFO("Sucessfully load Image: %s ", img_file.c_str());
   }
 
   void cut_voxel(unordered_map<VOXEL_LOC, OCTO_TREE_ROOT*>& feat_map,
@@ -361,6 +394,7 @@ public:
             sensor_msgs::PointCloud2 dbg_msg;
             pcl::toROSMsg(line_cloud, dbg_msg);
             dbg_msg.header.frame_id = "camera_init";
+            dbg_msg.header.stamp = ros::Time::now();
             pub_edge.publish(dbg_msg);
             // pcl::toROSMsg(debug_cloud, dbg_msg);
             // dbg_msg.header.frame_id = "camera_init";
@@ -871,7 +905,8 @@ public:
     cv::Mat camera_matrix = (cv::Mat_<double>(3, 3)
       << cam.fx_, cam.s_, cam.cx_, 0.0, cam.fy_, cam.cy_, 0.0, 0.0, 1.0);
     cv::Mat distortion_coeff =
-      (cv::Mat_<double>(1, 5) << cam.k1_, cam.k2_, cam.p1_, cam.p2_, cam.k3_);
+      (cv::Mat_<double>(1, 4) << cam.k1_, cam.k2_, cam.p1_, cam.p2_ );
+ 
     Eigen::AngleAxisd rotation_vector3;
     rotation_vector3 =
       Eigen::AngleAxisd(extrinsic_params[0], Eigen::Vector3d::UnitZ()) *
@@ -907,11 +942,21 @@ public:
       if(cos_angle(q_ * pt1 + t_, pt2) > cos(DEG2RAD(cam_fov_/2.0))) // fisheye cam FoV check
         pts_3d.emplace_back(cv::Point3f(pt1(0), pt1(1), pt1(2)));
     }
-    #ifdef FISHEYE
-    cv::fisheye::projectPoints(pts_3d, pts_2d, r_vec, t_vec, camera_.camera_matrix_, camera_.dist_coeffs_);
-    #else
+    ROS_WARN(" lidar_edge_clouds_3d %ld , pts_3d  %ld , pts_2d  %ld  .. ", lidar_edge_clouds_3d->size(), pts_3d.size(), pts_2d.size() );
+    // #ifdef FISHEYE
+    // cv::fisheye::projectPoints(pts_3d, pts_2d, r_vec, t_vec, camera_.camera_matrix_, camera_.dist_coeffs_);
+    // #else
+
+      //   cv::Mat distortion_coeff =
+      // (cv::Mat_<double>(1, 5) << cam.k1_, cam.k2_, cam.p1_, cam.p2_, cam.k3_);
+    // std::cout << "892 Camera Matrix: " << std::endl << camera_matrix << std::endl;
+    // std::cout << "893 Distortion Coeffs: " << std::endl << distortion_coeff << std::endl;
+
     cv::projectPoints(pts_3d, r_vec, t_vec, camera_matrix, distortion_coeff, pts_2d);
-    #endif
+    // #endif 
+    
+    ROS_WARN(" lidar_edge_clouds_3d %ld , pts_3d  %ld , pts_2d  %ld  .. ", lidar_edge_clouds_3d->size(), pts_3d.size(), pts_2d.size() );
+    // ROS_WARN(" lidar_edge_clouds_3d %ld , pts_3d  %ld , pts_2d  %ld  .. ", lidar_edge_clouds_3d.size(), pts_3d.size(), pts_2d.size() );
 
     pcl::PointCloud<pcl::PointXYZ>::Ptr line_edge_cloud_2d(new pcl::PointCloud<pcl::PointXYZ>);
     std::vector<int> line_edge_cloud_2d_number;
@@ -926,8 +971,11 @@ public:
       pi_3d.y = pts_3d[i].y;
       pi_3d.z = pts_3d[i].z;
       pi_3d.intensity = 1;
+
       if(p.x > 0 && p.x < cam.width_ && pts_2d[i].y > 0 && pts_2d[i].y < cam.height_)
       {
+        // ROS_WARN("3d-2d:  %lf %lf %lf %lf %lf ", pi_3d.x, pi_3d.y, pi_3d.z, p.x ,  p.y );
+        // ROS_WARN(" img_pts_container[pts_2d[i].y][pts_2d[i].x].size() %ld ", img_pts_container[pts_2d[i].y][pts_2d[i].x].size() );
         if(img_pts_container[pts_2d[i].y][pts_2d[i].x].size() == 0)
         {
           line_edge_cloud_2d->points.push_back(p);
@@ -939,7 +987,7 @@ public:
     }
     if(show_residual)
     {
-      cv::Mat residual_img = getConnectImg(cam, dis_threshold, cam_edge_clouds_2d, line_edge_cloud_2d);
+      cv::Mat residual_img = getConnectImg(cam, 32, cam_edge_clouds_2d, line_edge_cloud_2d);
       cv::resize(residual_img, residual_img, cv::Size(), 0.5, 0.5, cv::INTER_LINEAR);
       cv::imshow("residual", residual_img);
       cv::waitKey(10);
@@ -958,6 +1006,8 @@ public:
     tree_cloud_cam = cam_edge_clouds_2d;
     tree_cloud_lidar = line_edge_cloud_2d;
     search_cloud = line_edge_cloud_2d;
+    
+    ROS_WARN(" size : cam_edge_clouds_2d : %ld, line_edge_cloud_2d : %ld ", cam_edge_clouds_2d->size(),  line_edge_cloud_2d->points.size() );
 
     int K = 5; // 指定近邻个数
     // 创建两个向量，分别存放近邻的索引值、近邻的中心距
@@ -1237,11 +1287,11 @@ public:
       << extrinsic_params[3], extrinsic_params[4], extrinsic_params[5]);
     // project 3d-points into image view
     std::vector<cv::Point2f> pts_2d;
-    #ifdef FISHEYE
-    cv::fisheye::projectPoints(pts_3d, pts_2d, r_vec, t_vec, camera_.camera_matrix_, camera_.dist_coeffs_);
-    #else
+    // #ifdef FISHEYE
+    // cv::fisheye::projectPoints(pts_3d, pts_2d, r_vec, t_vec, camera_.camera_matrix_, camera_.dist_coeffs_);
+    // #else
     cv::projectPoints(pts_3d, r_vec, t_vec, camera_matrix, distortion_coeff, pts_2d);
-    #endif
+    // #endif
     cv::Mat image_project = cv::Mat::zeros(cam.height_, cam.width_, CV_16UC1);
     cv::Mat rgb_image_project = cv::Mat::zeros(cam.height_, cam.width_, CV_8UC3);
     for(size_t i = 0; i < pts_2d.size(); ++i)

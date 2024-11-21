@@ -6,7 +6,7 @@
 #include "ceres/ceres.h"
 #include "common.h"
 
-// #define debug_mode
+#define debug_mode
 
 using namespace std;
 using namespace Eigen;
@@ -17,6 +17,24 @@ Eigen::Vector4d distor;
 #else
 Eigen::Matrix<double, 5, 1> distor;
 #endif
+
+static Eigen::Vector3d R2ypr(const Eigen::Matrix3d &R)
+{
+     Eigen::Vector3d n = R.col(0);
+     Eigen::Vector3d o = R.col(1);
+     Eigen::Vector3d a = R.col(2);
+
+     Eigen::Vector3d ypr(3);
+     double y = atan2(n(1), n(0));
+     double p = atan2(-n(2), n(0) * cos(y) + n(1) * sin(y));
+     double r = atan2(a(0) * sin(y) - a(1) * cos(y), -o(0) * sin(y) + o(1) * cos(y));
+     ypr(0) = y;
+     ypr(1) = p;
+     ypr(2) = r;
+
+     return ypr;
+}
+
 
 class vpnp_calib
 {
@@ -223,7 +241,7 @@ void roughCalib(Calibration& calibra, double search_resolution, int max_iter)
         int pnp_size = pnp_list.size();
         float cost = ((float)(edge_size - pnp_size) / (float)edge_size);
         #ifdef debug_mode
-        std::cout << "n " << n << " round " << round << " a " << a << " iter "
+        std::cout << "n " << n << " round " << round  << " iter "
                   << iter << " cost:" << cost << std::endl;
         #endif
         if(cost < min_cost)
@@ -241,7 +259,7 @@ void roughCalib(Calibration& calibra, double search_resolution, int max_iter)
                             true, calibra.camera_.rgb_edge_cloud_,
                             calibra.lidar_edge_cloud_, pnp_list);
           cv::Mat projection_img = calibra.getProjectionImg(test_params);
-          cv::resize(projection_img, projection_img, cv::Size(), 0.5, 0.5, cv::INTER_LINEAR);
+          cv::resize(projection_img, projection_img, cv::Size(), 1, 1, cv::INTER_LINEAR);
           cv::imshow("rough calib", projection_img);
           cv::waitKey(10);
         }
@@ -254,9 +272,10 @@ int main(int argc, char **argv)
   ros::init(argc, argv, "calib_single_camera");
   ros::NodeHandle nh;
 
-  int dis_thr_low_bound;
+  int dis_thr_low_bound, dis_thr_up_bound;
   bool use_ada_voxel, use_rough_calib, only_calib_rotation;
   nh.getParam("distance_threshold_lower_bound", dis_thr_low_bound);
+  nh.getParam("distance_threshold_up_bound", dis_thr_up_bound);
   nh.getParam("use_adaptive_voxel", use_ada_voxel);
   nh.getParam("use_rough_calib", use_rough_calib);
   nh.getParam("only_calibrate_rotation", only_calib_rotation);
@@ -269,15 +288,17 @@ int main(int argc, char **argv)
   Calibration calib(CamConfigPath, CalibSettingPath, use_ada_voxel);
   if(use_rough_calib) roughCalib(calib, DEG2RAD(0.1), 30);
 
-  string result_file = ResultPath + "/extrinsic.txt";
+  string result_file = ResultPath + "/extrinsic_mlcc_1118.txt";
   ofstream outfile;
   outfile.open(result_file, ofstream::trunc);
   outfile.close();
 
+  auto init_R = calib.camera_.ext_R;
+
   /* calibration process */
   int iter = 0;
   ros::Time begin_t = ros::Time::now();
-  for(int dis_threshold = 30; dis_threshold > dis_thr_low_bound; dis_threshold -= 1)
+  for(int dis_threshold =  dis_thr_up_bound ; dis_threshold >  dis_thr_low_bound; dis_threshold -= 1)
   {
     cout << "Iteration:" << iter++ << " Distance:" << dis_threshold << endl;
     for(int cnt = 0; cnt < 2; cnt++)
@@ -301,10 +322,13 @@ int main(int argc, char **argv)
       distor << calib.camera_.k1_, calib.camera_.k2_, calib.camera_.p1_, calib.camera_.p2_, calib.camera_.k3_;
       #endif
 
+      // ROS_WARN("-------- f ");
       calib.buildVPnp(calib.camera_, calib_params, dis_threshold, true,
                       calib.camera_.rgb_edge_cloud_, calib.lidar_edge_cloud_, vpnp_list);
+      // ROS_WARN("--------");
 
       Eigen::Quaterniond q(R);
+      q.normalize();
       double ext[7];
       ext[0] = q.x(); ext[1] = q.y(); ext[2] = q.z(); ext[3] = q.w();
       ext[4] = T[0]; ext[5] = T[1]; ext[6] = T[2];
@@ -360,9 +384,18 @@ int main(int argc, char **argv)
   T = calib.camera_.ext_t;
   outfile.open(result_file, ofstream::app);
   for(int i = 0; i < 3; i++)
-    outfile << R(i, 0) << "," << R(i, 1) << "," << R(i, 2) << "," << T[i] << "\n";
-  outfile << 0 << "," << 0 << "," << 0 << "," << 1 << "\n";
+    outfile << R(i, 0) << "," << R(i, 1) << "," << R(i, 2) << "," << T[i] << "," << "\n";
+  outfile << 0 << "," << 0 << "," << 0 << "," << 1 << "\n\n\n";
+
+  Eigen::Vector3d adjust_euler = R2ypr( R ) * 180.0 / M_PI; // 自定义旋转矩阵转欧拉角
+  // auto adjust_euler = R2ypr(  init_R.rotation().inverse() * R.inverse().rotation()  ) * 180.0 / M_PI ; // 自定义旋转矩阵转欧拉角
+  outfile  << "T_lidar_camera<R2ypr>: Roll : " << adjust_euler(2) << " , Pitch : " << adjust_euler(1) <<  " , Yaw : " << adjust_euler(0) << std::endl << std::endl;
+  adjust_euler = R2ypr(  init_R.inverse() * R.inverse()   ) * 180.0 / M_PI ; // 自定义旋转矩阵转欧拉角
+  outfile  << "T_lidar_camera<R2ypr>: Roll : " << adjust_euler(2) << " , Pitch : " << adjust_euler(1) <<  " , Yaw : " << adjust_euler(0) << std::endl << std::endl;
+  outfile  << " "  << T[0] << " "  << T[1] << " "  << T[2] << " "  << adjust_euler(2)  << "," << adjust_euler(1) <<  " ," << adjust_euler(0) << std::endl << std::endl;
+  
   outfile.close();
+  cout << "result_file : "  << result_file << endl;
 
   /* visualize the colorized point cloud */
   calib_params << euler_angle(0), euler_angle(1), euler_angle(2),
@@ -375,6 +408,8 @@ int main(int argc, char **argv)
     getchar();
     Eigen::Vector3d euler_angle = calib.camera_.ext_R.eulerAngles(2, 1, 0);
     Eigen::Vector3d transation = calib.camera_.ext_t;
+    cout << "eulerAngles:" << euler_angle << endl;
+    cout << "transation:" << transation << endl;
     Vector6d calib_params;
     calib_params << euler_angle(0), euler_angle(1), euler_angle(2), transation(0), transation(1), transation(2);
     calib.colorCloud(calib_params, 1, calib.camera_, calib.camera_.rgb_img_, calib.lidar_cloud_);
